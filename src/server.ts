@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
@@ -1188,7 +1188,15 @@ export function createServer(config = loadConfig()): RunningServer {
   return { app, config };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+async function isMainModule(): Promise<boolean> {
+  if (!process.argv[1]) return false;
+
+  const modulePath = await realpath(fileURLToPath(import.meta.url));
+  const entrypointPath = await realpath(process.argv[1]);
+  return modulePath === entrypointPath;
+}
+
+if (await isMainModule()) {
   const { app, config } = createServer();
   app.listen(config.port, config.host, () => {
     console.log(
