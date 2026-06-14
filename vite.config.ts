@@ -5,19 +5,17 @@ import { defineConfig } from "vite";
 export default defineConfig({
   root: resolve(__dirname, "src/ui"),
   plugins: [react()],
-  base: "/mcp-app-assets/v/20260531-2/",
+  base: "./",
   build: {
     outDir: resolve(__dirname, "dist/ui"),
     emptyOutDir: true,
+    manifest: true,
     rollupOptions: {
       input: resolve(__dirname, "src/ui/workspace-app.html"),
       output: {
-        entryFileNames: "assets/workspace-app.js",
+        entryFileNames: "assets/[name]-[hash].js",
         chunkFileNames: "assets/[name]-[hash].js",
-        assetFileNames: (assetInfo) =>
-          assetInfo.name?.endsWith(".css")
-            ? "assets/workspace-app.css"
-            : "assets/[name]-[hash][extname]",
+        assetFileNames: "assets/[name]-[hash][extname]",
       },
     },
   },
