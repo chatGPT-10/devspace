@@ -20,7 +20,7 @@ body {
 }
 
 .empty,
-.diff-card {
+.tool-card {
   width: 100%;
   border: 1px solid var(--color-border-primary, #3a3a40);
   border-radius: 8px;
@@ -34,7 +34,7 @@ body {
   font-size: var(--font-text-sm-size, 13px);
 }
 
-.diff-header {
+.tool-header {
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr) auto 22px;
   align-items: center;
@@ -50,11 +50,15 @@ body {
   text-align: left;
 }
 
-.diff-header:hover {
+.tool-header:hover:not(:disabled) {
   background: var(--color-background-tertiary, #333338);
 }
 
-.file-icon {
+.tool-header:disabled {
+  cursor: default;
+}
+
+.tool-icon {
   display: grid;
   width: 36px;
   height: 36px;
@@ -67,7 +71,19 @@ body {
   font-weight: 700;
 }
 
-.path {
+.tool-main {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.tool-title {
+  color: var(--color-text-primary, #f5f5f6);
+  font-size: var(--font-text-sm-size, 13px);
+  font-weight: 600;
+}
+
+.tool-label {
   overflow: hidden;
   color: var(--color-text-secondary, #d6d6dc);
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
@@ -85,6 +101,19 @@ body {
   white-space: nowrap;
 }
 
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border-primary, #3a3a40);
+  border-radius: 999px;
+  color: var(--color-text-secondary, #d6d6dc);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: var(--font-text-sm-size, 12px);
+  white-space: nowrap;
+}
+
 .add {
   color: var(--color-success-text, #6fda83);
 }
@@ -99,7 +128,7 @@ body {
   text-align: center;
 }
 
-.diff-body {
+.tool-body {
   border-top: 1px solid var(--color-border-primary, #3a3a40);
   background: var(--color-background-primary, #18191d);
 }
@@ -132,14 +161,32 @@ body {
   border-bottom-left-radius: 8px;
 }
 
+.text-payload {
+  max-height: 420px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px 14px;
+  color: var(--color-text-secondary, #d6d6dc);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: var(--font-text-sm-size, 12px);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.text-payload.run_shell {
+  color: var(--color-text-primary, #f5f5f6);
+  background: var(--color-background-primary, #101114);
+}
+
 @media (max-width: 520px) {
-  .diff-header {
+  .tool-header {
     grid-template-columns: 32px minmax(0, 1fr) auto 18px;
     gap: 8px;
     padding: 8px;
   }
 
-  .file-icon {
+  .tool-icon {
     width: 32px;
     height: 32px;
   }

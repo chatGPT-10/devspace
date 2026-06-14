@@ -5,16 +5,30 @@ export interface DiffStats {
   removals: number;
 }
 
+export type StoredToolName =
+  | "open_workspace"
+  | "read_file"
+  | "write_file"
+  | "edit_file"
+  | "grep_files"
+  | "find_files"
+  | "list_directory"
+  | "run_shell";
+
+type StoredContent =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
 export interface StoredToolResult {
   id: string;
-  workspaceId: string;
-  tool: "edit_file";
-  path: string;
+  workspaceId?: string;
+  tool: StoredToolName;
+  path?: string;
+  label?: string;
   createdAt: string;
-  summary: DiffStats & {
-    editCount: number;
-  };
+  summary: Record<string, unknown>;
   payload: {
+    content?: StoredContent[];
     diff?: string;
     patch?: string;
   };
@@ -38,11 +52,11 @@ export class ResultStore {
     return result;
   }
 
-  get(resultId: string, workspaceId: string): StoredToolResult {
+  get(resultId: string, workspaceId?: string): StoredToolResult {
     this.prune();
 
     const result = this.results.get(resultId);
-    if (!result || result.workspaceId !== workspaceId) {
+    if (!result || (workspaceId && result.workspaceId !== workspaceId)) {
       throw new Error(`Unknown tool result: ${resultId}`);
     }
 

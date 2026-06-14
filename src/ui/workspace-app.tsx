@@ -10,42 +10,56 @@ import {
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import "./workspace-app.css";
 
-interface EditSummary {
-  additions: number;
-  removals: number;
-  editCount: number;
-}
+type ToolName =
+  | "open_workspace"
+  | "read_file"
+  | "write_file"
+  | "edit_file"
+  | "grep_files"
+  | "find_files"
+  | "list_directory"
+  | "run_shell";
 
-interface EditResultCard {
-  tool: "edit_file";
+type LoadState = "idle" | "loading" | "loaded" | "error";
+type HostContext = NonNullable<ReturnType<App["getHostContext"]>>;
+
+interface ToolResultCard {
+  tool: ToolName;
   resultId: string;
-  workspaceId: string;
-  status: "applied";
-  path: string;
-  summary: EditSummary;
-  ui: {
-    card: "file-diff";
-    expandable: boolean;
+  workspaceId?: string;
+  path?: string;
+  label?: string;
+  root?: string;
+  status?: string;
+  summary?: Record<string, unknown>;
+  ui?: {
+    card?: string;
+    expandable?: boolean;
   };
 }
 
-interface EditPayload {
+interface ToolContent {
+  type: "text" | "image";
+  text?: string;
+  data?: string;
+  mimeType?: string;
+}
+
+interface ToolPayload {
+  content?: ToolContent[];
   diff?: string;
   patch?: string;
 }
 
 interface PayloadResult {
-  payload?: EditPayload;
+  payload?: ToolPayload;
 }
 
-type LoadState = "idle" | "loading" | "loaded" | "error";
-type HostContext = NonNullable<ReturnType<App["getHostContext"]>>;
-
-function isEditResultCard(value: unknown): value is EditResultCard {
+function isToolResultCard(value: unknown): value is ToolResultCard {
   if (!value || typeof value !== "object") return false;
 
-  const candidate = value as Partial<EditResultCard>;
-  return candidate.tool === "edit_file" && candidate.ui?.card === "file-diff";
+  const candidate = value as Partial<ToolResultCard>;
+  return typeof candidate.tool === "string" && typeof candidate.resultId === "string";
 }
 
 function getStructuredContent<T>(result: CallToolResult): T | undefined {
@@ -58,8 +72,8 @@ function AppRoot() {
   const [connected, setConnected] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [hostContext, setHostContext] = useState<HostContext | undefined>();
-  const [card, setCard] = useState<EditResultCard | null>(null);
-  const [payload, setPayload] = useState<EditPayload | null>(null);
+  const [card, setCard] = useState<ToolResultCard | null>(null);
+  const [payload, setPayload] = useState<ToolPayload | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -68,19 +82,19 @@ function AppRoot() {
     if (appRef.current) return;
 
     const createdApp = new App(
-      { name: "pi-on-mcp-edit-diff", version: "0.2.0" },
+      { name: "pi-on-mcp-tool-cards", version: "0.3.0" },
       {},
     );
     appRef.current = createdApp;
 
     createdApp.ontoolresult = (result) => {
       const structured = result.structuredContent;
-      if (!isEditResultCard(structured)) {
+      if (!isToolResultCard(structured)) {
         setCard(null);
         setPayload(null);
         setExpanded(false);
         setLoadState("idle");
-        setErrorMessage("No diff card is available for this tool result.");
+        setErrorMessage("No result card is available for this tool result.");
         return;
       }
 
@@ -130,7 +144,7 @@ function AppRoot() {
     if (!insets) return;
 
     document.body.style.padding = `${insets.top}px ${insets.right}px ${insets.bottom}px ${insets.left}px`;
-  }, [hostContext?.safeAreaInsets]);
+  }, [hostContext]);
 
   const themeType: "light" | "dark" =
     hostContext?.theme === "light" ? "light" : "dark";
@@ -162,7 +176,7 @@ function AppRoot() {
 
     try {
       const result = await app.callServerTool({
-        name: "get_edit_result_payload",
+        name: "get_tool_result_payload",
         arguments: {
           workspaceId: card.workspaceId,
           resultId: card.resultId,
@@ -194,58 +208,162 @@ function AppRoot() {
   if (!card) {
     return (
       <EmptyState
-        message={errorMessage ?? "Waiting for an edit result."}
+        message={errorMessage ?? "Waiting for a tool result."}
         tone={errorMessage ? "error" : "muted"}
       />
     );
   }
 
-  const patch = payload?.patch || payload?.diff;
+  const display = getToolDisplay(card);
+  const expandable = card.ui?.expandable !== false;
 
   return (
     <main className="shell">
-      <section className="diff-card">
+      <section className={`tool-card ${display.tone}`}>
         <button
-          className="diff-header"
+          className="tool-header"
           type="button"
           aria-expanded={expanded}
+          disabled={!expandable}
           onClick={toggleExpanded}
         >
-          <span className="file-icon" aria-hidden="true">
-            +
+          <span className="tool-icon" aria-hidden="true">
+            {display.icon}
           </span>
-          <span className="path" title={card.path}>
-            {card.path}
+          <span className="tool-main">
+            <span className="tool-title">{display.title}</span>
+            <span className="tool-label" title={display.label}>
+              {display.label}
+            </span>
           </span>
-          <span className="stats" aria-label="Diff statistics">
-            <span className="add">+{card.summary.additions}</span>
-            <span className="remove">-{card.summary.removals}</span>
-          </span>
+          <SummaryBadges card={card} />
           <span className="chevron" aria-hidden="true">
-            {expanded ? "^" : "v"}
+            {expandable ? (expanded ? "^" : "v") : ""}
           </span>
         </button>
 
         {expanded ? (
-          <div className="diff-body">
-            {loadState === "loading" ? (
-              <StatusLine message="Loading diff..." />
-            ) : loadState === "error" ? (
-              <StatusLine message={errorMessage ?? "Unable to load diff."} tone="error" />
-            ) : patch ? (
-              <PatchDiff
-                patch={patch}
-                options={diffOptions}
-                className="pierre-diff"
-                disableWorkerPool
-              />
-            ) : (
-              <StatusLine message="Diff payload is not available." />
-            )}
+          <div className="tool-body">
+            <ToolPayloadView
+              card={card}
+              payload={payload}
+              loadState={loadState}
+              errorMessage={errorMessage}
+              diffOptions={diffOptions}
+            />
           </div>
         ) : null}
       </section>
     </main>
+  );
+}
+
+function ToolPayloadView({
+  card,
+  payload,
+  loadState,
+  errorMessage,
+  diffOptions,
+}: {
+  card: ToolResultCard;
+  payload: ToolPayload | null;
+  loadState: LoadState;
+  errorMessage: string | null;
+  diffOptions: React.ComponentProps<typeof PatchDiff>["options"];
+}) {
+  if (loadState === "loading") return <StatusLine message="Loading details..." />;
+  if (loadState === "error") {
+    return <StatusLine message={errorMessage ?? "Unable to load details."} tone="error" />;
+  }
+
+  if (card.tool === "edit_file") {
+    const patch = payload?.patch || payload?.diff;
+    if (!patch) return <StatusLine message="Diff payload is not available." />;
+
+    return (
+      <PatchDiff
+        patch={patch}
+        options={diffOptions}
+        className="pierre-diff"
+        disableWorkerPool
+      />
+    );
+  }
+
+  const text = payloadText(payload);
+  if (!text) return <StatusLine message="No details available." />;
+
+  return <pre className={`text-payload ${card.tool}`}>{text}</pre>;
+}
+
+function SummaryBadges({ card }: { card: ToolResultCard }) {
+  const summary = card.summary ?? {};
+
+  if (card.tool === "edit_file") {
+    return (
+      <span className="stats" aria-label="Diff statistics">
+        <span className="add">+{String(summary.additions ?? 0)}</span>
+        <span className="remove">-{String(summary.removals ?? 0)}</span>
+      </span>
+    );
+  }
+
+  if (card.tool === "open_workspace") {
+    return <span className="badge">{String(summary.agentsFiles ?? 0)} AGENTS</span>;
+  }
+
+  if (card.tool === "run_shell") {
+    return <span className="badge">{String(summary.lines ?? 0)} lines</span>;
+  }
+
+  if (card.tool === "grep_files" || card.tool === "find_files") {
+    return <span className="badge">{String(summary.lines ?? 0)} lines</span>;
+  }
+
+  if (card.tool === "write_file") {
+    return <span className="badge">{String(summary.characters ?? 0)} chars</span>;
+  }
+
+  return <span className="badge">{String(summary.lines ?? 0)} lines</span>;
+}
+
+function getToolDisplay(card: ToolResultCard): {
+  icon: string;
+  title: string;
+  label: string;
+  tone: string;
+} {
+  const label = card.label ?? card.path ?? card.root ?? card.tool;
+
+  switch (card.tool) {
+    case "open_workspace":
+      return { icon: "W", title: "Workspace", label, tone: "workspace" };
+    case "read_file":
+      return { icon: "R", title: "Read File", label, tone: "read" };
+    case "write_file":
+      return { icon: "W", title: "Write File", label, tone: "write" };
+    case "edit_file":
+      return { icon: "+", title: "Edit File", label, tone: "edit" };
+    case "grep_files":
+      return { icon: "G", title: "Grep Files", label, tone: "search" };
+    case "find_files":
+      return { icon: "F", title: "Find Files", label, tone: "search" };
+    case "list_directory":
+      return { icon: "L", title: "List Directory", label, tone: "directory" };
+    case "run_shell":
+      return { icon: "$", title: "Run Shell", label, tone: "shell" };
+  }
+}
+
+function payloadText(payload: ToolPayload | null): string {
+  return (
+    payload?.content
+      ?.map((item) => {
+        if (item.type === "text") return item.text ?? "";
+        return `[${item.mimeType ?? "image"} image payload]`;
+      })
+      .filter(Boolean)
+      .join("\n\n") ?? ""
   );
 }
 

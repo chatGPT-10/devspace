@@ -32,6 +32,10 @@ interface RunningServer {
   config: ServerConfig;
 }
 
+type ToolContent =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
 function isAuthorized(req: Request, config: ServerConfig): boolean {
   if (!config.authToken) return true;
 
@@ -50,6 +54,32 @@ function sendJsonRpcError(
     error: { code, message },
     id: null,
   });
+}
+
+function contentText(content: ToolContent[]): string {
+  return content
+    .filter((item): item is { type: "text"; text: string } => item.type === "text")
+    .map((item) => item.text)
+    .join("\n");
+}
+
+function textSummary(content: ToolContent[]): { lines: number; characters: number } {
+  const text = contentText(content);
+  return {
+    lines: text.length === 0 ? 0 : text.split("\n").length,
+    characters: text.length,
+  };
+}
+
+function compactToolResultText(
+  verb: string,
+  label: string,
+  summary: Record<string, unknown>,
+): string {
+  const details = Object.entries(summary)
+    .map(([key, value]) => `${key}: ${String(value)}`)
+    .join(", ");
+  return details ? `${verb} ${label} (${details}).` : `${verb} ${label}.`;
 }
 
 async function loadWorkspaceAppHtml(): Promise<string> {
@@ -122,16 +152,17 @@ function createMcpServer(
 
   registerAppTool(
     server,
-    "get_edit_result_payload",
+    "get_tool_result_payload",
     {
-      title: "Get edit result payload",
+      title: "Get tool result payload",
       description:
-        "Fetch the full diff payload for an edit_file result. This is app-only and hidden from the model.",
+        "Fetch the full payload for a tool result. This is app-only and hidden from the model.",
       inputSchema: {
         workspaceId: z
           .string()
+          .optional()
           .describe("Workspace identifier returned by open_workspace."),
-        resultId: z.string().describe("Result identifier returned by edit_file."),
+        resultId: z.string().describe("Result identifier returned by a tool."),
       },
       _meta: {
         ui: {
@@ -142,20 +173,22 @@ function createMcpServer(
       annotations: { readOnlyHint: true },
     },
     async ({ workspaceId, resultId }) => {
-      workspaces.getWorkspace(workspaceId);
+      if (workspaceId) workspaces.getWorkspace(workspaceId);
       const result = results.get(resultId, workspaceId);
 
       return {
         content: [
           {
             type: "text" as const,
-            text: `Loaded diff payload for ${result.path}.`,
+            text: `Loaded payload for ${result.label ?? result.path ?? result.tool}.`,
           },
         ],
         structuredContent: {
-          tool: "get_edit_result_payload",
+          tool: "get_tool_result_payload",
           resultId,
           workspaceId,
+          sourceTool: result.tool,
+          label: result.label,
           path: result.path,
           summary: result.summary,
           payload: result.payload,
@@ -164,7 +197,8 @@ function createMcpServer(
     },
   );
 
-  server.registerTool(
+  registerAppTool(
+    server,
     "open_workspace",
     {
       title: "Open workspace",
@@ -177,10 +211,34 @@ function createMcpServer(
             "Absolute path to a local project directory inside an allowed root.",
           ),
       },
+      _meta: {
+        ui: {
+          resourceUri: WORKSPACE_APP_URI,
+          visibility: ["model"],
+        },
+      },
       annotations: { readOnlyHint: true },
     },
     async ({ path }) => {
       const { workspace, agentsFiles } = await workspaces.openWorkspace(path);
+      const summary = {
+        agentsFiles: agentsFiles.length,
+      };
+      const storedResult = results.put({
+        tool: "open_workspace",
+        workspaceId: workspace.id,
+        label: workspace.root,
+        path: workspace.root,
+        summary,
+        payload: {
+          content: [
+            {
+              type: "text",
+              text: formatAgentsNotice(agentsFiles) ?? "",
+            },
+          ],
+        },
+      });
       return {
         content: [
           {
@@ -209,11 +267,24 @@ function createMcpServer(
               ]
             : []),
         ],
+        structuredContent: {
+          tool: "open_workspace",
+          resultId: storedResult.id,
+          workspaceId: workspace.id,
+          root: workspace.root,
+          label: workspace.root,
+          summary,
+          ui: {
+            card: "workspace",
+            expandable: agentsFiles.length > 0,
+          },
+        },
       };
     },
   );
 
-  server.registerTool(
+  registerAppTool(
+    server,
     "read_file",
     {
       title: "Read file",
@@ -239,6 +310,12 @@ function createMcpServer(
           .optional()
           .describe("Maximum number of lines to read."),
       },
+      _meta: {
+        ui: {
+          resourceUri: WORKSPACE_APP_URI,
+          visibility: ["model"],
+        },
+      },
       annotations: { readOnlyHint: true },
     },
     async ({ workspaceId, ...input }) => {
@@ -247,15 +324,48 @@ function createMcpServer(
       const agentsNotice = formatAgentsNotice(
         await workspaces.loadAgentsForPath(workspace, targetPath),
       );
-      return readFileTool(input, {
+      const response = await readFileTool(input, {
         cwd: workspace.root,
         root: workspace.root,
         agentsNotice,
       });
+
+      if (response.isError) return response;
+
+      const summary = {
+        ...textSummary(response.content),
+        offset: input.offset ?? 1,
+        limited: input.limit !== undefined,
+      };
+      const storedResult = results.put({
+        workspaceId,
+        tool: "read_file",
+        path: input.path,
+        label: input.path,
+        summary,
+        payload: { content: response.content },
+      });
+
+      return {
+        ...response,
+        structuredContent: {
+          tool: "read_file",
+          resultId: storedResult.id,
+          workspaceId,
+          path: input.path,
+          label: input.path,
+          summary,
+          ui: {
+            card: "text",
+            expandable: true,
+          },
+        },
+      };
     },
   );
 
-  server.registerTool(
+  registerAppTool(
+    server,
     "write_file",
     {
       title: "Write file",
@@ -270,6 +380,12 @@ function createMcpServer(
           .describe("File path to write, relative to the workspace root."),
         content: z.string().describe("Complete new file content."),
       },
+      _meta: {
+        ui: {
+          resourceUri: WORKSPACE_APP_URI,
+          visibility: ["model"],
+        },
+      },
       annotations: { destructiveHint: true },
     },
     async ({ workspaceId, ...input }) => {
@@ -278,11 +394,42 @@ function createMcpServer(
       const agentsNotice = formatAgentsNotice(
         await workspaces.loadAgentsForPath(workspace, targetPath),
       );
-      return writeFileTool(input, {
+      const response = await writeFileTool(input, {
         cwd: workspace.root,
         root: workspace.root,
         agentsNotice,
       });
+
+      if (response.isError) return response;
+
+      const summary = {
+        lines: input.content.length === 0 ? 0 : input.content.split("\n").length,
+        characters: input.content.length,
+      };
+      const storedResult = results.put({
+        workspaceId,
+        tool: "write_file",
+        path: input.path,
+        label: input.path,
+        summary,
+        payload: { content: response.content },
+      });
+
+      return {
+        ...response,
+        structuredContent: {
+          tool: "write_file",
+          resultId: storedResult.id,
+          workspaceId,
+          path: input.path,
+          label: input.path,
+          summary,
+          ui: {
+            card: "write",
+            expandable: true,
+          },
+        },
+      };
     },
   );
 
@@ -340,6 +487,7 @@ function createMcpServer(
         workspaceId,
         tool: "edit_file",
         path: input.path,
+        label: input.path,
         summary: {
           ...stats,
           editCount: input.edits.length,
@@ -366,6 +514,7 @@ function createMcpServer(
           workspaceId,
           status: "applied",
           path: input.path,
+          label: input.path,
           summary: storedResult.summary,
           ui: {
             card: "file-diff",
@@ -376,7 +525,8 @@ function createMcpServer(
     },
   );
 
-  server.registerTool(
+  registerAppTool(
+    server,
     "grep_files",
     {
       title: "Grep files",
@@ -395,6 +545,12 @@ function createMcpServer(
           ),
         include: z.string().optional().describe("Optional include glob."),
       },
+      _meta: {
+        ui: {
+          resourceUri: WORKSPACE_APP_URI,
+          visibility: ["model"],
+        },
+      },
       annotations: { readOnlyHint: true },
     },
     async ({ workspaceId, ...input }) => {
@@ -405,15 +561,48 @@ function createMcpServer(
       const agentsNotice = formatAgentsNotice(
         await workspaces.loadAgentsForPath(workspace, targetPath),
       );
-      return grepFilesTool(input, {
+      const response = await grepFilesTool(input, {
         cwd: workspace.root,
         root: workspace.root,
         agentsNotice,
       });
+
+      if (response.isError) return response;
+
+      const summary = {
+        pattern: input.pattern,
+        scope: input.path ?? ".",
+        ...textSummary(response.content),
+      };
+      const storedResult = results.put({
+        workspaceId,
+        tool: "grep_files",
+        path: input.path,
+        label: input.pattern,
+        summary,
+        payload: { content: response.content },
+      });
+
+      return {
+        ...response,
+        structuredContent: {
+          tool: "grep_files",
+          resultId: storedResult.id,
+          workspaceId,
+          path: input.path,
+          label: input.pattern,
+          summary,
+          ui: {
+            card: "search",
+            expandable: true,
+          },
+        },
+      };
     },
   );
 
-  server.registerTool(
+  registerAppTool(
+    server,
     "find_files",
     {
       title: "Find files",
@@ -429,6 +618,12 @@ function createMcpServer(
           .optional()
           .describe("Optional path scope relative to the workspace root."),
       },
+      _meta: {
+        ui: {
+          resourceUri: WORKSPACE_APP_URI,
+          visibility: ["model"],
+        },
+      },
       annotations: { readOnlyHint: true },
     },
     async ({ workspaceId, ...input }) => {
@@ -439,15 +634,48 @@ function createMcpServer(
       const agentsNotice = formatAgentsNotice(
         await workspaces.loadAgentsForPath(workspace, targetPath),
       );
-      return findFilesTool(input, {
+      const response = await findFilesTool(input, {
         cwd: workspace.root,
         root: workspace.root,
         agentsNotice,
       });
+
+      if (response.isError) return response;
+
+      const summary = {
+        pattern: input.pattern,
+        scope: input.path ?? ".",
+        ...textSummary(response.content),
+      };
+      const storedResult = results.put({
+        workspaceId,
+        tool: "find_files",
+        path: input.path,
+        label: input.pattern,
+        summary,
+        payload: { content: response.content },
+      });
+
+      return {
+        ...response,
+        structuredContent: {
+          tool: "find_files",
+          resultId: storedResult.id,
+          workspaceId,
+          path: input.path,
+          label: input.pattern,
+          summary,
+          ui: {
+            card: "search",
+            expandable: true,
+          },
+        },
+      };
     },
   );
 
-  server.registerTool(
+  registerAppTool(
+    server,
     "list_directory",
     {
       title: "List directory",
@@ -461,6 +689,12 @@ function createMcpServer(
           .string()
           .describe("Directory path to list, relative to the workspace root."),
       },
+      _meta: {
+        ui: {
+          resourceUri: WORKSPACE_APP_URI,
+          visibility: ["model"],
+        },
+      },
       annotations: { readOnlyHint: true },
     },
     async ({ workspaceId, ...input }) => {
@@ -469,15 +703,44 @@ function createMcpServer(
       const agentsNotice = formatAgentsNotice(
         await workspaces.loadAgentsForPath(workspace, targetPath),
       );
-      return listDirectoryTool(input, {
+      const response = await listDirectoryTool(input, {
         cwd: workspace.root,
         root: workspace.root,
         agentsNotice,
       });
+
+      if (response.isError) return response;
+
+      const summary = textSummary(response.content);
+      const storedResult = results.put({
+        workspaceId,
+        tool: "list_directory",
+        path: input.path,
+        label: input.path,
+        summary,
+        payload: { content: response.content },
+      });
+
+      return {
+        ...response,
+        structuredContent: {
+          tool: "list_directory",
+          resultId: storedResult.id,
+          workspaceId,
+          path: input.path,
+          label: input.path,
+          summary,
+          ui: {
+            card: "directory",
+            expandable: true,
+          },
+        },
+      };
     },
   );
 
-  server.registerTool(
+  registerAppTool(
+    server,
     "run_shell",
     {
       title: "Run shell",
@@ -501,6 +764,12 @@ function createMcpServer(
           .optional()
           .describe("Timeout in seconds. Defaults to 30, max 300."),
       },
+      _meta: {
+        ui: {
+          resourceUri: WORKSPACE_APP_URI,
+          visibility: ["model"],
+        },
+      },
       annotations: { destructiveHint: true },
     },
     async ({ workspaceId, workingDirectory, ...input }) => {
@@ -512,7 +781,39 @@ function createMcpServer(
       const agentsNotice = formatAgentsNotice(
         await workspaces.loadAgentsForDirectory(workspace, cwd),
       );
-      return runShellTool(input, { cwd, root: workspace.root, agentsNotice });
+      const response = await runShellTool(input, { cwd, root: workspace.root, agentsNotice });
+
+      if (response.isError) return response;
+
+      const summary = {
+        command: input.command,
+        workingDirectory: workingDirectory ?? ".",
+        ...textSummary(response.content),
+      };
+      const storedResult = results.put({
+        workspaceId,
+        tool: "run_shell",
+        path: workingDirectory,
+        label: input.command,
+        summary,
+        payload: { content: response.content },
+      });
+
+      return {
+        ...response,
+        structuredContent: {
+          tool: "run_shell",
+          resultId: storedResult.id,
+          workspaceId,
+          path: workingDirectory,
+          label: input.command,
+          summary,
+          ui: {
+            card: "shell",
+            expandable: true,
+          },
+        },
+      };
     },
   );
 
